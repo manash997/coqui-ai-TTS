@@ -629,7 +629,7 @@ class Xtts(BaseTTS):
         top_k=50,
         top_p=0.85,
         do_sample=True,
-        speed=2.0,
+        speed=1.5,
         enable_text_splitting=False,
         **hf_generate_kwargs,
     ):
