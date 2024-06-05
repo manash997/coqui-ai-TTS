@@ -629,10 +629,11 @@ class Xtts(BaseTTS):
         top_k=50,
         top_p=0.85,
         do_sample=True,
-        speed=1.1,
+        speed=1.0,
         enable_text_splitting=False,
         **hf_generate_kwargs,
     ):
+        print("the value of speed at model is:",speed)
         language = language.split("-")[0]  # remove the country code
         length_scale = 1.0 / max(speed, 0.05)
         gpt_cond_latent = gpt_cond_latent.to(self.device)
