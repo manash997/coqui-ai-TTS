@@ -239,6 +239,8 @@ if __name__ == "__main__":
                 print("Dataset Processed!")
                 print("len train meta:",len(train_meta))
                 print("len eval meta:",len(eval_meta))
+                print("train data",train_meta)
+                print("eval data",eval_meta)
                 return "Dataset Processed!", train_meta, eval_meta
 
         with gr.Tab("2 - Fine-tuning XTTS Encoder"):
