@@ -233,6 +233,18 @@ _abbreviations = {
             # Korean doesn't typically use abbreviations in the same way as Latin-based scripts.
         ]
     ],
+    "hi": [
+    (re.compile("\\b%s\\." % x[0], re.IGNORECASE), x[1])
+    for x in [
+        ("डॉ", "डॉक्टर"),  # doctor
+        ("श्री", "श्रीमान"),  # Mr.
+        ("श्रीमती", "श्रीमती"),  # Mrs.
+        ("सू", "सूचना"),  # information
+        ("साहित्य", "साहित्य"),  # literature
+        ("विज्ञ", "विज्ञान"),  # science
+        # Add other common Hindi abbreviations here if needed.
+    ]
+],
 }
 
 
@@ -429,6 +441,18 @@ _symbols_multilingual = {
             ("°", " 도 "),
         ]
     ],
+    "hi": [
+    (re.compile(r"%s" % re.escape(x[0]), re.IGNORECASE), x[1])
+    for x in [
+        ("&", " और "),
+        ("@", " आट "),
+        ("%", " प्रतिशत "),
+        ("#", " हैश "),
+        ("$", " डॉलर "),
+        ("£", " पाउंड "),
+        ("°", " डिग्री "),
+        ]
+    ],
 }
 
 
@@ -454,6 +478,7 @@ _ordinal_re = {
     "tr": re.compile(r"([0-9]+)(\.|inci|nci|uncu|üncü|\.)"),
     "hu": re.compile(r"([0-9]+)(\.|adik|edik|odik|edik|ödik|ödike|ik)"),
     "ko": re.compile(r"([0-9]+)(번째|번|차|째)"),
+    "hi": re.compile(r"([0-9]+)(वाँ|वा|वीं|वी|रा|री|र|ठा|ठी|ठ)"),
 }
 _number_re = re.compile(r"[0-9]+")
 _currency_re = {
