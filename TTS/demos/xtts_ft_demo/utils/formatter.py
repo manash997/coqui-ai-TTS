@@ -147,11 +147,13 @@ def format_audio_list(
     df_train = df[num_val_samples:]
 
     df_train = df_train.sort_values("audio_file")
+    print("df train:",df_train)
     train_metadata_path = os.path.join(out_path, "metadata_train.csv")
     df_train.to_csv(train_metadata_path, sep="|", index=False)
 
     eval_metadata_path = os.path.join(out_path, "metadata_eval.csv")
     df_eval = df_eval.sort_values("audio_file")
+    print("df eval:",df_eval)
     df_eval.to_csv(eval_metadata_path, sep="|", index=False)
 
     # deallocate VRAM and RAM
