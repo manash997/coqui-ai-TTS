@@ -1,14 +1,15 @@
 import logging
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 import librosa
 import torch
+import time
 import torch.nn.functional as F
 import torchaudio
+import torch.nn.utils.rnn as rnn_utils
 from coqpit import Coqpit
-from trainer.io import load_fsspec
+import gc
 
 from TTS.tts.layers.xtts.gpt import GPT
 from TTS.tts.layers.xtts.hifigan_decoder import HifiDecoder
@@ -16,7 +17,7 @@ from TTS.tts.layers.xtts.stream_generator import init_stream_support
 from TTS.tts.layers.xtts.tokenizer import VoiceBpeTokenizer, split_sentence
 from TTS.tts.layers.xtts.xtts_manager import LanguageManager, SpeakerManager
 from TTS.tts.models.base_tts import BaseTTS
-from TTS.utils.generic_utils import is_pytorch_at_least_2_4
+from TTS.utils.io import load_fsspec
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def wav_to_mel_cloning(
     mel = mel_stft(wav)
     mel = torch.log(torch.clamp(mel, min=1e-5))
     if mel_norms is None:
-        mel_norms = torch.load(mel_norms_file, map_location=device, weights_only=is_pytorch_at_least_2_4())
+        mel_norms = torch.load(mel_norms_file, map_location=device)
     mel = mel / mel_norms.unsqueeze(0).unsqueeze(-1)
     return mel
 
@@ -202,7 +203,7 @@ class Xtts(BaseTTS):
         >>> from TTS.tts.configs.xtts_config import XttsConfig
         >>> from TTS.tts.models.xtts import Xtts
         >>> config = XttsConfig()
-        >>> model = Xtts.init_from_config(config)
+        >>> model = Xtts.inif_from_config(config)
         >>> model.load_checkpoint(config, checkpoint_dir="paths/to/models_dir/", eval=True)
     """
 
@@ -525,6 +526,7 @@ class Xtts(BaseTTS):
         enable_text_splitting=False,
         **hf_generate_kwargs,
     ):
+        print("running inference")
         language = language.split("-")[0]  # remove the country code
         length_scale = 1.0 / max(speed, 0.05)
         gpt_cond_latent = gpt_cond_latent.to(self.device)
@@ -533,7 +535,8 @@ class Xtts(BaseTTS):
             text = split_sentence(text, language, self.tokenizer.char_limits[language])
         else:
             text = [text]
-
+        print("text after split:")
+        print(text)
         wavs = []
         gpt_latents_list = []
         for sent in text:
@@ -586,6 +589,139 @@ class Xtts(BaseTTS):
         return {
             "wav": torch.cat(wavs, dim=0).numpy(),
             "gpt_latents": torch.cat(gpt_latents_list, dim=1).numpy(),
+            "speaker_embedding": speaker_embedding,
+        }
+    def Pbatch_inference(
+    self,
+    orig_text,
+    language,
+    gpt_cond_latent,
+    speaker_embedding,
+    # GPT inference
+    temperature=0.75,
+    length_penalty=1.0,
+    repetition_penalty=10.0,
+    top_k=50,
+    top_p=0.85,
+    do_sample=True,
+    num_beams=1,
+    speed=1.0,
+    enable_text_splitting=True,
+    **hf_generate_kwargs,
+    ):
+        print("####################In xtts batch mode############################")
+        start = time.time()
+        language = language.split("-")[0]  # remove the country code
+        length_scale = 1.0 / max(speed, 0.05)
+        gpt_cond_latent = gpt_cond_latent.to(self.device)
+        speaker_embedding = speaker_embedding.to(self.device)
+
+        #xg = gpt_cond_latent.repeat(len(text), 1, 1)
+        #xse = speaker_embedding.repeat(len(text), 1, 1)
+
+        wavs = []
+        text_tokens = []
+        gpt_latents_list = []
+        lens = []
+        GPT_in = []
+        text = []
+        #print("text received:",orig_text)
+        try:
+            if enable_text_splitting:
+                for sent in orig_text:
+                    sent = split_sentence(sent, language, self.tokenizer.char_limits[language])
+                    for val in sent:
+                        print(val)
+                        text.append(val)
+                
+            xg = gpt_cond_latent.repeat(len(text), 1, 1)
+            xse = speaker_embedding.repeat(len(text), 1, 1)
+        except Exception as e:
+            print(e,flush=True)
+        with torch.no_grad():
+            for sent in text:
+                sent = sent.strip().lower()
+                #print("this is sent:",sent)
+                text_token = torch.IntTensor(self.tokenizer.encode(sent, lang=language)).unsqueeze(0)
+                lens.append(text_token.shape[1])
+                text_tokens.append(text_token)
+
+                gpt_codes = self.gpt.generate(
+                    cond_latents=xg[0].unsqueeze(0),
+                    text_inputs=text_token.to(self.device),
+                    input_tokens=None,
+                    do_sample=do_sample,
+                    top_p=top_p,
+                    top_k=top_k,
+                    temperature=temperature,
+                    num_return_sequences=self.gpt_batch_size,
+                    num_beams=num_beams,
+                    length_penalty=length_penalty,
+                    repetition_penalty=repetition_penalty,
+                    output_attentions=False,
+                    **hf_generate_kwargs,
+                )
+                GPT_in.append(gpt_codes[0])
+
+            max_text_len = max(lens)
+            text_padded = torch.IntTensor(len(text), max_text_len)
+            text_padded = text_padded.zero_()
+            for i in range(len(text)):
+                t = text_tokens[i]
+                text_padded[i, : lens[i]] = torch.IntTensor(t)
+            text_padded = text_padded.to(self.device)
+
+            gpt_codes = rnn_utils.pad_sequence(GPT_in, batch_first=True, padding_value=1025)
+
+            expected_output_len = torch.tensor(
+                    [gpt_codes.shape[-1] * self.gpt.code_stride_len], device=self.device
+                )
+
+            text_len = torch.tensor(lens, device=self.device)
+            gpt_latents = self.gpt(
+                text_padded,
+                text_len,
+                gpt_codes,
+                expected_output_len,
+                cond_latents=xg,
+                return_attentions=False,
+                return_latent=True,
+            )
+            #print("gpt codes:",gpt_codes)
+            for i in range(gpt_codes.shape[0]):
+                for idx, d in enumerate(gpt_codes[i]):
+                    #print("value of d:",d)
+                    if d == 1025:
+                        #print("value matched")
+                        #print("value of idx:",idx)
+                        break
+
+                #print("diff val:",gpt_codes[i].shape[0])
+                z = torch.zeros((gpt_codes[i].shape[0] - idx, gpt_latents.shape[-1]), dtype=gpt_latents.dtype, device=gpt_latents.device)
+                #print("z:",z)
+                gpt_latents[i,idx:,:] = z
+
+            #print("gpt_latents:",gpt_latents)
+            #print("shape of gpt latents:",gpt_latents.shape)
+            if length_scale != 1.0:
+                gpt_latents = F.interpolate(
+                    gpt_latents.transpose(1, 2), scale_factor=length_scale, mode="linear"
+                ).transpose(1, 2)
+            wav = self.hifigan_decoder(gpt_latents, g=xse).cpu().squeeze()
+            print("all files generated in:",time.time()-start)
+            # Ensure wav is always 2D
+            if len(wav.shape) == 1:
+                wav = wav.unsqueeze(0)
+            #print("shape of wav:",wav.shape)
+            # free up the memory
+            del xg, xse
+            gc.collect()
+            torch.cuda.empty_cache()
+
+
+        return {
+            "wav": [wav_i.cpu() for wav_i in wav],
+            "gpt_latents": gpt_latents.cpu().numpy(),
             "speaker_embedding": speaker_embedding,
         }
 
@@ -668,7 +804,6 @@ class Xtts(BaseTTS):
                 repetition_penalty=float(repetition_penalty),
                 output_attentions=False,
                 output_hidden_states=True,
-                return_dict_in_generate=True,
                 **hf_generate_kwargs,
             )
 
@@ -701,12 +836,12 @@ class Xtts(BaseTTS):
 
     def forward(self):
         raise NotImplementedError(
-            "XTTS has a dedicated trainer, please check the XTTS docs: https://coqui-tts.readthedocs.io/en/latest/models/xtts.html#training"
+            "XTTS has a dedicated trainer, please check the XTTS docs: https://coqui-tts.readthedocs.io/en/dev/models/xtts.html#training"
         )
 
     def eval_step(self):
         raise NotImplementedError(
-            "XTTS has a dedicated trainer, please check the XTTS docs: https://coqui-tts.readthedocs.io/en/latest/models/xtts.html#training"
+            "XTTS has a dedicated trainer, please check the XTTS docs: https://coqui-tts.readthedocs.io/en/dev/models/xtts.html#training"
         )
 
     @staticmethod
@@ -763,11 +898,7 @@ class Xtts(BaseTTS):
         """
 
         model_path = checkpoint_path or os.path.join(checkpoint_dir, "model.pth")
-        if vocab_path is None:
-            if checkpoint_dir is not None and (Path(checkpoint_dir) / "vocab.json").is_file():
-                vocab_path = str(Path(checkpoint_dir) / "vocab.json")
-            else:
-                vocab_path = config.model_args.tokenizer_file
+        vocab_path = vocab_path or os.path.join(checkpoint_dir, "vocab.json")
 
         if speaker_file_path is None and checkpoint_dir is not None:
             speaker_file_path = os.path.join(checkpoint_dir, "speakers_xtts.pth")
@@ -799,5 +930,5 @@ class Xtts(BaseTTS):
 
     def train_step(self):
         raise NotImplementedError(
-            "XTTS has a dedicated trainer, please check the XTTS docs: https://coqui-tts.readthedocs.io/en/latest/models/xtts.html#training"
+            "XTTS has a dedicated trainer, please check the XTTS docs: https://coqui-tts.readthedocs.io/en/dev/models/xtts.html#training"
         )
