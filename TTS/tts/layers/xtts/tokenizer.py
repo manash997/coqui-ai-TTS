@@ -38,6 +38,51 @@ def get_spacy_lang(lang):
 
 def split_sentence(text, lang, text_split_length=250):
     """Preprocess the input text"""
+    print("the updated tokenizer script")
+    def count_words(text):
+        # Simple word count - split on whitespace and remove empty strings
+        return len([word for word in text.strip().split() if word])
+    ### adding a custom splitting logic
+    def custom_split_long_sentence(sentence):
+        """
+        Split a long sentence using Hindi joining words, falling back to punctuation
+        Returns a list of split parts
+        """
+        try:
+            # Common Hindi joining words (conjunctions)
+            hindi_joins = ['और', 'एवं', 'तथा', 'या', 'अथवा', 'किंतु', 'परंतु', 'लेकिन', 
+                        'मगर', 'तो', 'की', 'कि', 'अतः', 'इसलिए', 'क्योंकि', 'हालांकि',
+                        'बाद']
+            
+            # First try splitting by Hindi joining words
+            '''for join_word in hindi_joins:
+                if join_word in sentence:
+                    parts = sentence.split(join_word, 1)  # Split only once
+                    if all(len(part.strip()) < text_split_length for part in parts):
+                        return [parts[0].strip(), join_word + " " + parts[1].strip()], None
+            
+            # If no suitable Hindi joining word found, try punctuation
+            print("checking punctuation:")
+            punctuation_marks = ['।', ',', ';', ':', '|', '॥']
+            for punct in punctuation_marks:
+                if punct in sentence:
+                    parts = sentence.split(punct, 1)  # Split only once
+                    if all(len(part.strip()) < text_split_length for part in parts):
+                        return [parts[0].strip() + punct, parts[1].strip()], None'''
+            
+            # If no good splitting point found, fall back to simple middle split
+            mid = len(sentence) // 2
+            # Try to split at the nearest space to avoid breaking words
+            split_index = sentence.rfind(' ', 0, mid)
+            if split_index == -1:  # If no space found in first half
+                split_index = sentence.find(' ', mid)
+            if split_index == -1:  # If no space found at all
+                split_index = mid
+            
+            return [sentence[:split_index].strip(), sentence[split_index:].strip()], None
+        except Exception as e:
+            return None, f"Unexpected error in sentence splitting: {str(e)}"
+    ### custom splitting logic ends here
     text_splits = []
     if text_split_length is not None and len(text) >= text_split_length:
         text_splits.append("")
@@ -45,21 +90,41 @@ def split_sentence(text, lang, text_split_length=250):
         nlp.add_pipe("sentencizer")
         doc = nlp(text)
         for sentence in doc.sents:
-            if len(text_splits[-1]) + len(str(sentence)) <= text_split_length:
+            current_sentence = str(sentence)
+            current_word_count = count_words(current_sentence)
+            if len(text_splits[-1]) + len(str(sentence)) <= text_split_length and current_word_count < 8:
                 # if the last sentence + the current sentence is less than the text_split_length
                 # then add the current sentence to the last sentence
                 text_splits[-1] += " " + str(sentence)
                 text_splits[-1] = text_splits[-1].lstrip()
             elif len(str(sentence)) > text_split_length:
+                #print("this sentence is being split:",sentence)
                 # if the current sentence is greater than the text_split_length
-                for line in textwrap.wrap(
+                #print("sen > text split len, wrapping")
+                '''for line in textwrap.wrap(
                     str(sentence),
                     width=text_split_length,
                     drop_whitespace=True,
                     break_on_hyphens=False,
                     tabsize=1,
                 ):
-                    text_splits.append(str(line))
+                    text_splits.append(str(line))'''
+                split_parts, error = custom_split_long_sentence(current_sentence)
+                #print("split parts 1:",split_parts)
+                if error:
+                    print("!!found error so wrapping")
+                    # Fall back to textwrap if there's an error
+                    for line in textwrap.wrap(
+                        str(sentence),
+                        width=text_split_length,
+                        drop_whitespace=True,
+                        break_on_hyphens=False,
+                        tabsize=1,
+                    ):
+                        text_splits.append(str(line))
+                else:
+                    # Use the custom split parts
+                    text_splits.extend(split_parts)
             else:
                 text_splits.append(str(sentence))
 
@@ -231,12 +296,6 @@ _abbreviations = {
         (re.compile("\\b%s\\." % x[0], re.IGNORECASE), x[1])
         for x in [
             # Korean doesn't typically use abbreviations in the same way as Latin-based scripts.
-        ]
-    ],
-    "hi": [
-        (re.compile("\\b%s\\." % x[0], re.IGNORECASE), x[1])
-        for x in [
-            # Hindi doesn't typically use abbreviations in the same way as Latin-based scripts.
         ]
     ],
 }
@@ -435,18 +494,6 @@ _symbols_multilingual = {
             ("°", " 도 "),
         ]
     ],
-    "hi": [
-        (re.compile(r"%s" % re.escape(x[0]), re.IGNORECASE), x[1])
-        for x in [
-            ("&", " और "),
-            ("@", " ऐट दी रेट "),
-            ("%", " प्रतिशत "),
-            ("#", " हैश "),
-            ("$", " डॉलर "),
-            ("£", " पाउंड "),
-            ("°", " डिग्री "),
-        ]
-    ],
 }
 
 
@@ -472,7 +519,6 @@ _ordinal_re = {
     "tr": re.compile(r"([0-9]+)(\.|inci|nci|uncu|üncü|\.)"),
     "hu": re.compile(r"([0-9]+)(\.|adik|edik|odik|edik|ödik|ödike|ik)"),
     "ko": re.compile(r"([0-9]+)(번째|번|차|째)"),
-    "hi": re.compile(r"([0-9]+)(st|nd|rd|th)"),  # To check
 }
 _number_re = re.compile(r"[0-9]+")
 _currency_re = {
@@ -524,7 +570,6 @@ def _expand_currency(m, lang="en", currency="USD"):
         "tr": ", ",
         "hu": ", ",
         "ko": ", ",
-        "hi": ", ",
     }
 
     if amount.is_integer():
@@ -664,7 +709,7 @@ class VoiceBpeTokenizer:
             )
 
     def preprocess_text(self, txt, lang):
-        if lang in {"ar", "cs", "de", "en", "es", "fr", "hi", "hu", "it", "nl", "pl", "pt", "ru", "tr", "zh", "ko"}:
+        if lang in {"ar", "cs", "de", "en", "es", "fr", "hu", "it", "nl", "pl", "pt", "ru", "tr", "zh", "ko"}:
             txt = multilingual_cleaners(txt, lang)
             if lang == "zh":
                 txt = chinese_transliterate(txt)
@@ -672,6 +717,9 @@ class VoiceBpeTokenizer:
                 txt = korean_transliterate(txt)
         elif lang == "ja":
             txt = japanese_cleaners(txt, self.katsu)
+        elif lang == "hi":
+            # @manmay will implement this
+            txt = basic_cleaners(txt)
         else:
             raise NotImplementedError(f"Language '{lang}' is not supported.")
         return txt
@@ -794,9 +842,6 @@ def test_expand_numbers_multilingual():
         ("12.5 초 안에.", "십이 점 다섯 초 안에.", "ko"),
         ("50 명의 병사가 있었다.", "오십 명의 병사가 있었다.", "ko"),
         ("이것은 1 번째 테스트입니다", "이것은 첫 번째 테스트입니다", "ko"),
-        # Hindi
-        ("12.5 सेकंड में।", "साढ़े बारह सेकंड में।", "hi"),
-        ("50 सैनिक थे।", "पचास सैनिक थे।", "hi"),
     ]
     for a, b, lang in test_cases:
         out = expand_numbers_multilingual(a, lang=lang)
@@ -866,7 +911,6 @@ def test_symbols_multilingual():
         ("Pilim %14 dolu.", "Pilim yüzde 14 dolu.", "tr"),
         ("Az akkumulátorom töltöttsége 14%", "Az akkumulátorom töltöttsége 14 százalék", "hu"),
         ("배터리 잔량이 14%입니다.", "배터리 잔량이 14 퍼센트입니다.", "ko"),
-        ("मेरे पास 14% बैटरी है।", "मेरे पास चौदह प्रतिशत बैटरी है।", "hi"),
     ]
 
     for a, b, lang in test_cases:
