@@ -1,15 +1,14 @@
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import librosa
 import torch
-import time
 import torch.nn.functional as F
 import torchaudio
-import torch.nn.utils.rnn as rnn_utils
 from coqpit import Coqpit
-import gc
+from trainer.io import load_fsspec
 
 from TTS.tts.layers.xtts.gpt import GPT
 from TTS.tts.layers.xtts.hifigan_decoder import HifiDecoder
@@ -17,7 +16,7 @@ from TTS.tts.layers.xtts.stream_generator import init_stream_support
 from TTS.tts.layers.xtts.tokenizer import VoiceBpeTokenizer, split_sentence
 from TTS.tts.layers.xtts.xtts_manager import LanguageManager, SpeakerManager
 from TTS.tts.models.base_tts import BaseTTS
-from TTS.utils.io import load_fsspec
+from TTS.utils.generic_utils import is_pytorch_at_least_2_4
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +66,7 @@ def wav_to_mel_cloning(
     mel = mel_stft(wav)
     mel = torch.log(torch.clamp(mel, min=1e-5))
     if mel_norms is None:
-        mel_norms = torch.load(mel_norms_file, map_location=device)
+        mel_norms = torch.load(mel_norms_file, map_location=device, weights_only=is_pytorch_at_least_2_4())
     mel = mel / mel_norms.unsqueeze(0).unsqueeze(-1)
     return mel
 
